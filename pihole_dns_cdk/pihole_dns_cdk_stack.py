@@ -6,10 +6,16 @@ from aws_cdk import (
     core
 )
 
+import requests
+
 class PiholeDnsCdkStack(core.Stack):
 
     def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
+
+        # check the current ip and use it for security group whitelisting
+        whitelist_ip = requests.get("https://ipinfo.io/ip").text.strip('\n') + "/32"
+        print("your ip is " + whitelist_ip + " , using this for whitelisting")
 
         # create a VPC in all AZs
         vpc = aws_ec2.Vpc(
@@ -42,6 +48,9 @@ class PiholeDnsCdkStack(core.Stack):
             key_name = "workbook"
         )
         
+        # tag the ec2 instance 
+        core.Tag.add(ec2, "stack", "pihole")
+
         # create security group with inbound access from the internet
         sg = aws_ec2.SecurityGroup(
             self, "allow_dns_http_world",
@@ -49,29 +58,26 @@ class PiholeDnsCdkStack(core.Stack):
             vpc = vpc
         )
 
-        # add ssh
+        # add tcp/22 security group rule
         sg.add_ingress_rule(
-            peer = aws_ec2.Peer.any_ipv4(),
-            connection = aws_ec2.Port.tcp(22)
+            aws_ec2.Peer.ipv4(whitelist_ip), aws_ec2.Port.tcp(22)
         )
 
-        # add tcp
+        # add tcp/80 security group rule
         sg.add_ingress_rule(
-            peer = aws_ec2.Peer.any_ipv4(),
-            connection = aws_ec2.Port.tcp(80)
+            aws_ec2.Peer.ipv4(whitelist_ip), aws_ec2.Port.tcp(80)
         )
 
-        # add udp
+        # add udp/53 security group rule
         sg.add_ingress_rule(
-            peer = aws_ec2.Peer.any_ipv4(),
-            connection = aws_ec2.Port.udp(53)
+            aws_ec2.Peer.ipv4(whitelist_ip), aws_ec2.Port.udp(53)
         )
 
         # attach security group to instance
         ec2.add_security_group(sg)
 
         # create elastic ip
-        eip = aws_ec2.CfnEIP(self, 'ElasticIP', 
+        eip = aws_ec2.CfnEIP(self, 'elastic-ip', 
             domain = 'vpc', 
             instance_id = ec2.instance_id
         )

@@ -1,9 +1,8 @@
 from aws_cdk import (
+    aws_autoscaling,
     aws_ec2,
-    aws_ecs,
+    aws_lambda,
     aws_logs,
-    aws_ecs_patterns,
-    aws_elasticloadbalancingv2 as aws_elb,
     core
 )
 
@@ -12,10 +11,15 @@ class PiholeDnsCdkStack(core.Stack):
     def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
 
-        # create a VPC in 3 AZs
+        # create a VPC in all AZs
         vpc = aws_ec2.Vpc(
             self, 'dns_vpc',
-            max_azs = 3
+            max_azs = 10,
+            nat_gateways = 0,
+            subnet_configuration = [
+                aws_ec2.SubnetConfiguration(
+                    name = "publicSubnet", subnet_type = aws_ec2.SubnetType.PUBLIC)
+            ]
         )
 
         # add vpc flowlog for easier debugging
@@ -23,111 +27,69 @@ class PiholeDnsCdkStack(core.Stack):
             "flowlog"
         )
 
-        # create the ecs cluster
-        cluster = aws_ecs.Cluster(
-            self, 'ecs_cluster',
-            vpc = vpc
-        )
+        '''
+        yum install lighttpd-fastcgi php git
+        '''
 
-        # add ec2 cluster capacity and maximum spot price
-        cluster.add_capacity("spot_group",
-            instance_type = aws_ec2.InstanceType("t3.nano"),
-            spot_price = '0.005',
-            spot_instance_draining = True
-        )
 
-        # create a network load balancer
-        nlb = aws_elb.NetworkLoadBalancer(self, "public_nlb",
+        # create the ec2 instance
+        ec2 = aws_ec2.Instance(
+            self, "pihole",
             vpc = vpc,
-            internet_facing = True,
+            instance_type = aws_ec2.InstanceType('t3.nano'),
+            machine_image = aws_ec2.AmazonLinuxImage(generation = aws_ec2.AmazonLinuxGeneration.AMAZON_LINUX_2),
+            vpc_subnets = {'subnet_type': aws_ec2.SubnetType.PUBLIC},
+            key_name = "workbook"
         )
-
-        task_def = aws_ecs.Ec2TaskDefinition(self, "task_def")
-
-        container = task_def.add_container("container",
-            memory_limit_mib = 128,
-            image = aws_ecs.ContainerImage.from_registry("pihole/pihole")
-        )
-
-        # add the ec2 service with a public nlb
-        ec2_service = aws_ecs.Ec2Service(self, "pihole_service",
-            cluster = cluster,
-            desired_count = 1,
-            task_definition = task_def
-        )
-
-        # add internal security group
-        ec2_service.cluster.connections.allow_from(other = aws_ec2.Peer.ipv4(vpc.vpc_cidr_block), port_range = aws_ec2.Port.all_tcp())
-        ec2_service.cluster.connections.allow_from(other = aws_ec2.Peer.ipv4(vpc.vpc_cidr_block), port_range = aws_ec2.Port.all_udp())
-
-
-        '''
-        # add container udp mapping
-        container_53_udp    = aws_ecs.PortMapping(
-            container_port  = 53,
-            protocol        = aws_ecs.Protocol.UDP)
-
-        ec2_service.task_definition.default_container.add_port_mappings(container_53_udp)
-
-        '''
-        container_53_tcp    = aws_ecs.PortMapping(
-            container_port  = 53,
-            protocol        = aws_ecs.Protocol.TCP)
-
-        ec2_service.task_definition.default_container.add_port_mappings(container_53_tcp)
-
-        container_80_tcp    = aws_ecs.PortMapping(
-            container_port  = 80,
-            protocol        = aws_ecs.Protocol.TCP)
-
-        ec2_service.task_definition.default_container.add_port_mappings(container_80_tcp)
-
-        # create a target group and add the tcp health check
-        udp_tg = aws_elb.NetworkTargetGroup(
-            self,
-            target_type = aws_elb.TargetType.INSTANCE,
-            id = "tcp53",
-            port = 53,
+        
+        # create security group with inbound access from the internet
+        sg = aws_ec2.SecurityGroup(
+            self, "allow_dns_http_world",
+            description = 'Allow ssh from world',
             vpc = vpc
         )
 
-        ec2_service.attach_to_network_target_group(udp_tg)
-
-        # add the tcp/53 listener
-        list_udp = nlb.add_listener(
-            id = "list-udp",
-            protocol = aws_elb.Protocol.TCP,
-            port = 53,
-            default_target_groups = [udp_tg]
+        # add ssh
+        sg.add_ingress_rule(
+            peer = aws_ec2.Peer.any_ipv4(),
+            connection = aws_ec2.Port.tcp(22)
         )
 
-        # register the listener
-        udp_tg.register_listener(list_udp)
-
-        # create a target group and add the tcp health check
-        tcp_tg = aws_elb.NetworkTargetGroup(
-            self,
-            target_type = aws_elb.TargetType.INSTANCE,
-            id = "tcp80",
-            port = 80,
-            vpc = vpc
+        # add tcp
+        sg.add_ingress_rule(
+            peer = aws_ec2.Peer.any_ipv4(),
+            connection = aws_ec2.Port.tcp(80)
         )
 
-        ec2_service.attach_to_network_target_group(tcp_tg)
-
-        # add the tcp/80 listener
-        list_tcp = nlb.add_listener(
-            id = "listtcp",
-            protocol = aws_elb.Protocol.TCP,
-            port = 80,
-            default_target_groups = [tcp_tg]
+        # add udp
+        sg.add_ingress_rule(
+            peer = aws_ec2.Peer.any_ipv4(),
+            connection = aws_ec2.Port.udp(53)
         )
 
-        # register the listener
-        udp_tg.register_listener(list_tcp)
+        # attach security group to instance
+        ec2.add_security_group(sg)
 
-        # print the loadbalanacer dns name
+        # create elastic ip
+        eip = aws_ec2.CfnEIP(self, 'ElasticIP', 
+            domain = 'vpc', 
+            instance_id = ec2.instance_id
+        )
+
+        # create lambda function to update Elastic IP every minute
+        eip_func = aws_lambda.Function(self, 'eip-lambda', 
+            code = aws_lambda.Code.asset('lambda'),
+            runtime = aws_lambda.Runtime.PYTHON_3_8,
+            handler = "handler",
+            timeout = core.Duration.seconds(10),
+            tracing = aws_lambda.Tracing.ACTIVE,
+            environment = {
+                "eip_alloc": eip.attr_allocation_id
+            }
+        )
+
         core.CfnOutput(
-            self, "load_balancer_dns",
-            value = nlb.load_balancer_dns_name
+            self, "elastic_allocation_id",
+            value = eip.attr_allocation_id
         )
+

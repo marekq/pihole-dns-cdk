@@ -33,10 +33,10 @@ class PiholeDnsCdkStack(core.Stack):
             "flowlog"
         )
 
-        '''
-        yum install lighttpd-fastcgi php git
-        '''
-
+        # add ec2 instance user data from file
+        def get_userdata():
+            with open('userdata/boot.sh', 'r') as userdata:
+                return userdata.read()   
 
         # create the ec2 instance
         ec2 = aws_ec2.Instance(
@@ -45,7 +45,8 @@ class PiholeDnsCdkStack(core.Stack):
             instance_type = aws_ec2.InstanceType('t3.nano'),
             machine_image = aws_ec2.AmazonLinuxImage(generation = aws_ec2.AmazonLinuxGeneration.AMAZON_LINUX_2),
             vpc_subnets = {'subnet_type': aws_ec2.SubnetType.PUBLIC},
-            key_name = "workbook"
+            key_name = "workbook",
+            user_data = aws_ec2.UserData.custom(get_userdata())
         )
         
         # tag the ec2 instance 

@@ -35,12 +35,15 @@ class PiholeDnsCdkStack(core.Stack):
 
         # add ec2 instance user data from file
         def get_userdata():
-            with open('userdata/boot.sh', 'r') as userdata:
-                return userdata.read()   
+            with open('ec2/boot.sh', 'r') as userdata:
+                return userdata.read()
+
+        user_data = aws_ec2.UserData.for_linux()
+        user_data.add_commands(get_userdata())
 
         # create the ec2 instance
         ec2 = aws_ec2.Instance(
-            self, "pihole",
+            self, "pihole-ec2",
             vpc = vpc,
             instance_type = aws_ec2.InstanceType('t3.nano'),
             machine_image = aws_ec2.AmazonLinuxImage(generation = aws_ec2.AmazonLinuxGeneration.AMAZON_LINUX_2),
@@ -83,6 +86,7 @@ class PiholeDnsCdkStack(core.Stack):
             instance_id = ec2.instance_id
         )
 
+        '''
         # create lambda function to update Elastic IP every minute
         eip_func = aws_lambda.Function(self, 'eip-lambda', 
             code = aws_lambda.Code.asset('lambda'),
@@ -94,6 +98,7 @@ class PiholeDnsCdkStack(core.Stack):
                 "eip_alloc": eip.attr_allocation_id
             }
         )
+        '''
 
         core.CfnOutput(
             self, "elastic_allocation_id",

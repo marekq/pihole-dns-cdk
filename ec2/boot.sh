@@ -12,7 +12,7 @@ yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarc
 yum update -y
 
 # install pihole prerequirements
-yum install lighttpd-fastcgi php git whiptail procps bind -y
+yum install lighttpd-fastcgi php git whiptail procps -y
 
 # workaround - set OS release to fedora
 # there is no "unsupported OS" flag within the pihole installation script, so this is currently the easiest way
@@ -23,9 +23,11 @@ wget -O /tmp/basic-install.sh https://install.pi-hole.net
 bash /tmp/basic-install.sh --unattended
 
 # set pihole dns server to localhost
-echo "PIHOLE_DNS_1=127.0.0.1#53" > /etc/pihole/setupVars.conf
+echo "PIHOLE_DNS_1=1.1.1.1#53" > /etc/pihole/setupVars.conf
 
 # set the pihole web ui password
 /usr/local/bin/pihole -a -p @PASSWORD@
+
+yum update -y
 
 echo script stop $(date)

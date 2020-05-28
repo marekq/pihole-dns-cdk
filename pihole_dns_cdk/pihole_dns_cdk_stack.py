@@ -38,13 +38,13 @@ class PiholeDnsCdkStack(core.Stack):
         # add ec2 instance user data from file
         def get_userdata():
             with open('ec2/boot.sh', 'r') as userdata:
-                return userdata.read()        
+                return userdata.read().replace("@PASSWORD@", pihole_passw)    
 
         # generate a random pihole web ui password
         pihole_passw = ''.join(random.choice(string.ascii_lowercase) for i in range(10))
 
         # set the password in userdata with the generated one
-        user_data.add_commands(get_userdata().replace("@PASSWORD@", pihole_passw))
+        user_data.add_commands(get_userdata())
 
         # create the ec2 instance
         ec2 = aws_ec2.Instance(

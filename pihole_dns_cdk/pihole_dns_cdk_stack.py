@@ -6,16 +6,15 @@ from aws_cdk import (
     core
 )
 
-import requests
+import boto3, random, requests, string
 
 class PiholeDnsCdkStack(core.Stack):
 
     def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
 
-        # check the current ip and use it for security group whitelisting
+        # get the local ip address to whitelist
         whitelist_ip = requests.get("https://ipinfo.io/ip").text.strip('\n') + "/32"
-        print("your ip is " + whitelist_ip + " , using this for whitelisting")
 
         # create a VPC in all AZs
         vpc = aws_ec2.Vpc(
@@ -33,27 +32,40 @@ class PiholeDnsCdkStack(core.Stack):
             "flowlog"
         )
 
+        # add user data to ec2 instance
+        user_data = aws_ec2.UserData.for_linux()
+
         # add ec2 instance user data from file
         def get_userdata():
             with open('ec2/boot.sh', 'r') as userdata:
-                return userdata.read()
+                return userdata.read()        
 
-        user_data = aws_ec2.UserData.for_linux()
-        user_data.add_commands(get_userdata())
+        # generate a random pihole web ui password
+        pihole_passw = ''.join(random.choice(string.ascii_lowercase) for i in range(10))
+
+        # set the password in userdata with the generated one
+        user_data.add_commands(get_userdata().replace("@PASSWORD@", pihole_passw))
 
         # create the ec2 instance
         ec2 = aws_ec2.Instance(
             self, "pihole-ec2",
             vpc = vpc,
-            instance_type = aws_ec2.InstanceType('t3.nano'),
+            instance_type = aws_ec2.InstanceType('t3a.nano'),
             machine_image = aws_ec2.AmazonLinuxImage(generation = aws_ec2.AmazonLinuxGeneration.AMAZON_LINUX_2),
             vpc_subnets = {'subnet_type': aws_ec2.SubnetType.PUBLIC},
             key_name = "workbook",
             user_data = aws_ec2.UserData.custom(get_userdata())
         )
         
+        
         # tag the ec2 instance 
         core.Tag.add(ec2, "stack", "pihole")
+
+        # set the password as an ec2 instance tag
+        core.Tag.add(ec2, "PiholePassword", pihole_passw)
+
+        # add the pihole admin panel password as an ec2 instance tag
+        # this way it can be randomly generated and doesn't require you to ssh into the instance to retrieve
 
         # create security group with inbound access from the internet
         sg = aws_ec2.SecurityGroup(
@@ -87,21 +99,36 @@ class PiholeDnsCdkStack(core.Stack):
         )
 
         '''
-        # create lambda function to update Elastic IP every minute
-        eip_func = aws_lambda.Function(self, 'eip-lambda', 
-            code = aws_lambda.Code.asset('lambda'),
-            runtime = aws_lambda.Runtime.PYTHON_3_8,
-            handler = "handler",
-            timeout = core.Duration.seconds(10),
-            tracing = aws_lambda.Tracing.ACTIVE,
-            environment = {
-                "eip_alloc": eip.attr_allocation_id
-            }
-        )
-        '''
+        # get the elastic ip address of the ec2 instance
+        client = boto3.client('ec2')
 
+        addr_dict = client.describe_addresses(AllocationIds = [eip.attr_allocation_id])
+        elastic_ip = addr_dict['Addresses'][0]['PublicIp']
+
+        # print the elastic ip allocation id
         core.CfnOutput(
             self, "elastic_allocation_id",
             value = eip.attr_allocation_id
         )
+        '''
 
+        # print the pihole web ui password
+        core.CfnOutput(
+            self, "pihole_web_ui_password",
+            value = pihole_passw
+        )
+
+        # print the whitelisted ip in the ec2 security group
+        core.CfnOutput(
+            self, "whitelisted_ip",
+            value = whitelist_ip
+        )
+
+        '''
+        # print the elastic ip of the ec2 instance
+        # you can set this ip address as your dns server over udp/53 and access the pihole web ui over tcp/80
+        core.CfnOutput(
+            self, "public_elastic_ip",
+            value = elastic_ip
+        )
+        '''
